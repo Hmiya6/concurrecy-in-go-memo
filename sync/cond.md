@@ -53,7 +53,7 @@ func main() {
 (2) 操作対象の `queue` を宣言する. 常にその要素数が２となるように `Cond.Signal()`, `Cond.Wait()` を使って調整する.  
 (3) `queue` を操作するために排他的アクセス権を要求. (`Cond.Wait()` ループでアンロックが呼び出される前に一度ロックする必要がある.)  
 (4) `removeFromQueue()` 操作の終了時、当該 `Cond` を持つゴルーチン(今は `main()`)にシグナルを送る.  
-(5) `queue` の長さや操作を行うため、排他的アクセス権を要求.  
+(5) `queue` の長さを得る操作を行うため、排他的アクセス権を要求.  
 (6) シグナルを待つ条件を指定して、シグナルの情報を補う.  
 (7) シグナルが (4) から送られるまでゴルーチンを停止する. (`Cond.Wait()` ループに入ると、`Cond.L.Unlock()`が呼び出され、ループから出ると`Cond.L.Lock()`が呼び出される.)  
 (8) ゴルーチンを追加する.
@@ -108,3 +108,68 @@ Adding to queue
 ```
 
 ## `sync.Cond.Broadcast()`
+`Signal` は 内部でシグナルを待機しているゴルーチンのリストから**最も長く待っている**ゴルーチンを見つけてそのゴルーチンへシグナルを伝える.
+`Broadcat` は待機しているゴルーチン**すべて**にシグナルを送る.  
+
+### 例
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+)
+
+func main() {
+	type Button struct {
+		Clicked *sync.Cond
+	}
+	button := Button{Clicked: sync.NewCond(&sync.Mutex{})}
+
+	subscribe := func(con *sync.Cond, fn func()) {
+		var goroutineRunning sync.WaitGroup // ... (1)
+		goroutineRunning.Add(1)
+		go func() {
+			defer goroutineRunning.Done()
+			con.L.Lock()
+			defer con.L.Unlock()
+			con.Wait() // ... (2)
+			fn()
+		}()
+		goroutineRunning.Wait()
+	}
+
+	var clickRegistered sync.WaitGroup
+	clickRegistered.Add(1)
+	subscribe(button.Clicked, func() {
+		fmt.Println("Maximizing window.")
+		clickRegistered.Done()
+	})
+	clickRegistered.Add(1)
+	subscribe(button.Clicked, func() {
+		fmt.Println("Displaying annoying dialog box!")
+		clickRegistered.Done()
+	})
+	clickRegistered.Add(1)
+	subscribe(button.Clicked, func() {
+		fmt.Println("Mouse clicked!")
+		clickRegistered.Done()
+	})
+
+	button.Clicked.Broadcast() // ... (3)
+	clickRegistered.Wait()
+}
+
+```
+(1) `subscribe` 内部で `go func` が終了する前に関数を抜けることを防ぐ `WaitGroup`  
+(2) シグナルを待つ. (このとき `L.Unlock` を内部で実行する. `Wait` を抜ける時に `L.Lock` を実行する)
+(3) `sync.Cond.Broadcat` で待機しているゴルーチンすべてへシグナルを送る.
+
+実行結果
+```
+Mouse clicked!
+Maximizing window.
+Displaying annoying dialog box!
+```
+
+
